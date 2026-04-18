@@ -1,3 +1,13 @@
+#cd main.py
+#python -m venv venv
+#venv\Scripts\activate
+#pip install opencv-python
+#pip freeze > requirements.txt
+#deactivate
+
+
+
+
 import cv2
 
 # Load the face detection model
