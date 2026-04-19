@@ -30,6 +30,8 @@ import numpy as np
 from hand_detection import HandLandmarkDetector
 
 
+
+
 @dataclass
 class SmoothedPrediction:
     label: str

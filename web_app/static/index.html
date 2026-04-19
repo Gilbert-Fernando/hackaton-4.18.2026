@@ -1,0 +1,239 @@
+<!doctype html>
+<!-- HTML5 document declaration -->
+<html lang="en">
+  <!-- Head section: contains metadata and external resources -->
+  <head>
+    <meta charset="UTF-8" /> <!-- Character encoding for the document -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /> <!-- Responsive design meta tag -->
+    <title>ASL Live</title> <!-- Page title -->
+    <script src="https://cdn.tailwindcss.com"></script> <!-- Tailwind CSS framework for styling -->
+    <script src="https://cdn.jsdelivr.net/particles.js/2.0.0/particles.min.js"></script> <!-- Particles.js for animated background -->
+    <style>
+      /* Custom CSS classes for glassmorphism and visual effects */
+      .glass { background: rgba(17, 24, 39, 0.55); backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.08); } /* Glass effect background */
+      .shadow-soft { box-shadow: 0 20px 60px rgba(0,0,0,0.45); } /* Soft shadow for depth */
+      .scanline { background: linear-gradient(to bottom, rgba(255,255,255,0.04), rgba(255,255,255,0.0)); } /* Scanline effect overlay */
+      /* Particle canvas styling */
+      #particles-js { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: -1; } /* Full-screen particle background */
+    </style>
+  </head>
+  <!-- Body section: main content of the page -->
+  <body class="min-h-screen bg-slate-950 text-slate-100">
+    <!-- Animated particle background -->
+    <div id="particles-js"></div>
+    <!-- Background gradient overlay for visual appeal -->
+    <div class="absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(56,189,248,0.18),transparent_45%),radial-gradient(circle_at_bottom,rgba(168,85,247,0.18),transparent_45%)]"></div>
+
+    <!-- Main container with responsive layout -->
+    <div class="relative mx-auto max-w-6xl px-4 py-6">
+      <!-- Header section with title and status -->
+      <div class="flex items-center justify-between">
+        <div>
+          <div class="text-2xl font-semibold tracking-tight">ASL Recognition MVP</div> <!-- Main title -->
+          <div class="text-sm text-slate-300">Webcam + MediaPipe + scikit-learn • Letters (1 hand) + Phrases (2 hands)</div> <!-- Subtitle describing tech stack -->
+        </div>
+        <!-- Status indicator for WebSocket connection and FPS -->
+        <div class="glass shadow-soft rounded-2xl px-4 py-2 text-sm">
+          <span id="wsStatus" class="font-medium text-amber-200">Connecting…</span> <!-- WebSocket status -->
+          <span class="text-slate-300"> | FPS </span><span id="fps" class="font-semibold">0.0</span> <!-- Frames per second display -->
+        </div>
+      </div>
+
+      <!-- Main content grid: video feed and sidebar -->
+      <div class="mt-6 grid grid-cols-1 gap-5 lg:grid-cols-3">
+        <!-- Video feed section (takes 2/3 on large screens) -->
+        <div class="lg:col-span-2 glass shadow-soft rounded-3xl overflow-visible">
+          <div class="relative">
+            <!-- Video stream from server -->
+            <img id="video" src="/video" class="w-full object-contain" />
+            <!-- Scanline effect overlay -->
+            <div class="absolute inset-0 pointer-events-none scanline"></div>
+
+            <!-- Tip overlay at bottom left -->
+            <div class="absolute left-4 bottom-4 glass rounded-2xl px-4 py-2 text-xs text-slate-300">
+              Tip: show 1 hand for letters, 2 hands for phrases.
+            </div>
+          </div>
+        </div>
+
+        <!-- Sidebar with history and phrase builder -->
+        <div class="glass shadow-soft rounded-3xl p-5">
+          <!-- History section header -->
+          <div class="flex items-end justify-between">
+            <div>
+              <div class="text-lg font-semibold">History</div> <!-- Section title -->
+              <div class="text-xs text-slate-300">Last 10 stable predictions</div> <!-- Description -->
+            </div>
+            <!-- Clear history button -->
+            <button id="clear" class="rounded-xl bg-white/10 px-3 py-2 text-xs hover:bg-white/15">Clear</button>
+          </div>
+
+          <!-- History list container -->
+          <div class="mt-4 space-y-2" id="history"></div>
+
+          <!-- Phrase Builder section -->
+          <div class="mt-6">
+            <div class="text-lg font-semibold">Phrase Builder</div> <!-- Section title -->
+            <div class="text-xs text-slate-300">Appends when prediction stays stable</div> <!-- Description -->
+            <!-- Built phrase display area -->
+            <div class="mt-3 rounded-2xl bg-white/5 border border-white/10 p-4 min-h-16">
+              <div id="built" class="text-slate-100"></div> <!-- Display built phrase -->
+              <div id="builtHint" class="text-xs text-slate-400">Waiting for predictions…</div> <!-- Hint when no phrase -->
+            </div>
+            <!-- Control buttons for phrase builder -->
+            <div class="mt-3 flex gap-2">
+              <button id="backspace" class="flex-1 rounded-2xl bg-white/10 px-3 py-2 text-sm hover:bg-white/15">Backspace</button> <!-- Remove last word -->
+              <button id="reset" class="flex-1 rounded-2xl bg-white/10 px-3 py-2 text-sm hover:bg-white/15">Reset</button> <!-- Clear entire phrase -->
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Footer with instructions -->
+      <div class="mt-6 text-xs text-slate-400">
+        Run the server: <span class="font-mono">uvicorn webapp.app:app --reload</span> • Open <span class="font-mono">http://127.0.0.1:8000</span>
+      </div>
+    </div>
+
+    <!-- JavaScript for interactivity -->
+    <script>
+      // Get references to DOM elements for dynamic updates
+      const wsStatus = document.getElementById('wsStatus'); // WebSocket connection status
+      const labelEl = document.getElementById('label'); // Current prediction label (if exists)
+      const confEl = document.getElementById('conf'); // Confidence score (if exists)
+      const confBar = document.getElementById('confBar'); // Confidence bar (if exists)
+      const modeEl = document.getElementById('mode'); // Prediction mode (if exists)
+      const handsEl = document.getElementById('hands'); // Number of hands detected (if exists)
+      const fpsEl = document.getElementById('fps'); // Frames per second
+      const historyEl = document.getElementById('history'); // History list container
+      const builtEl = document.getElementById('built'); // Built phrase display
+      const builtHint = document.getElementById('builtHint'); // Hint text for phrase builder
+
+      // Application state object to track history and built phrases
+      const state = {
+        history: [], // Array of recent predictions
+        built: [], // Array of words in the built phrase
+        lastCommitted: null, // Last committed label
+        lastCommitTs: 0, // Timestamp of last commit
+      };
+
+      // Function to update confidence display
+      function setConf(v) {
+        if (confEl) confEl.textContent = v.toFixed(2); // Update confidence text
+        if (confBar) {
+          const pct = Math.max(0, Math.min(1, v)) * 100; // Calculate percentage
+          confBar.style.width = pct + '%'; // Update bar width
+        }
+      }
+
+      // Function to add a prediction to history
+      function pushHistory(item) {
+        state.history.unshift(item); // Add to beginning of array
+        state.history = state.history.slice(0, 10); // Keep only last 10
+        renderHistory(); // Re-render history list
+      }
+
+      // Function to render the history list in the DOM
+      function renderHistory() {
+        historyEl.innerHTML = ''; // Clear existing content
+        for (const h of state.history) {
+          const row = document.createElement('div'); // Create row element
+          row.className = 'rounded-2xl bg-white/5 border border-white/10 px-3 py-2 flex items-center justify-between'; // Styling
+          row.innerHTML = `
+            <div class="font-semibold">${h.label || '—'}</div> <!-- Prediction label -->
+            <div class="text-xs text-slate-300">${h.mode} • ${(h.confidence ?? 0).toFixed(2)}</div> <!-- Mode and confidence -->
+          `;
+          historyEl.appendChild(row); // Add to history container
+        }
+      }
+
+      // Function to commit a stable prediction to the phrase builder
+      function commitIfStable(payload) {
+        const now = Date.now(); // Current timestamp
+        const label = payload.label || ''; // Get label from payload
+        if (!label) return; // Skip if no label
+
+        const commitCooldownMs = 900; // Cooldown period in milliseconds
+        if (state.lastCommitted === label && (now - state.lastCommitTs) < commitCooldownMs) return; // Skip if recently committed
+
+        state.built.push(label); // Add label to built phrase
+        state.lastCommitted = label; // Update last committed
+        state.lastCommitTs = now; // Update timestamp
+        builtEl.textContent = state.built.join(' '); // Update display
+        builtHint.style.display = 'none'; // Hide hint
+      }
+
+      // Event listeners for buttons
+      document.getElementById('clear').onclick = () => { state.history = []; renderHistory(); }; // Clear history
+      document.getElementById('reset').onclick = () => { // Reset phrase builder
+        state.built = []; state.lastCommitted = null; builtEl.textContent = ''; builtHint.style.display = '';
+      };
+      document.getElementById('backspace').onclick = () => { // Remove last word from phrase
+        state.built.pop(); builtEl.textContent = state.built.join(' ');
+        if (state.built.length === 0) builtHint.style.display = ''; // Show hint if empty
+      };
+
+      // WebSocket setup
+      const wsUrl = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws'; // Construct WebSocket URL
+      let ws; // WebSocket instance
+
+      // Function to establish WebSocket connection
+      function connect() {
+        wsStatus.textContent = 'Connecting…'; // Update status
+        wsStatus.className = 'font-medium text-amber-200'; // Amber color
+
+        ws = new WebSocket(wsUrl); // Create WebSocket
+
+        ws.onopen = () => { // On connection open
+          wsStatus.textContent = 'Live'; // Update status
+          wsStatus.className = 'font-medium text-emerald-300'; // Green color
+          ws.send('hi'); // Send initial message
+        };
+
+        ws.onmessage = (evt) => { // On message received
+          const p = JSON.parse(evt.data); // Parse JSON payload
+          if (labelEl) labelEl.textContent = p.label || '—'; // Update label
+          if (modeEl) modeEl.textContent = p.mode || '—'; // Update mode
+          if (handsEl) handsEl.textContent = String(p.hands ?? 0); // Update hands count
+          fpsEl.textContent = (p.fps ?? 0).toFixed(1); // Update FPS
+          setConf(p.confidence ?? 0); // Update confidence
+
+          pushHistory({ label: p.label, confidence: p.confidence, mode: p.mode }); // Add to history
+          commitIfStable(p); // Check for phrase commit
+        };
+
+        ws.onclose = () => { // On connection close
+          wsStatus.textContent = 'Disconnected (retrying…)'; // Update status
+          wsStatus.className = 'font-medium text-rose-300'; // Red color
+          setTimeout(connect, 800); // Retry connection after delay
+        };
+
+        ws.onerror = () => { // On error
+          try { ws.close(); } catch(e) {} // Try to close WebSocket
+        };
+      }
+
+      // Initialize particles background
+      particlesJS('particles-js', {
+        particles: {
+          number: { value: 250, density: { enable: true, value_area: 800 } },
+          color: { value: '#60a5fa' },
+          shape: { type: 'circle' },
+          opacity: { value: 0.5, random: true, anim: { enable: true, speed: 1, opacity_min: 0.1, sync: false } },
+          size: { value: 3, random: true, anim: { enable: true, speed: 2, size_min: 0.1, sync: false } },
+          line_linked: { enable: true, distance: 150, color: '#60a5fa', opacity: 0.4, width: 1 },
+          move: { enable: true, speed: 2, direction: 'none', random: true, straight: false, out_mode: 'out', bounce: false }
+        },
+        interactivity: {
+          detect_on: 'canvas',
+          events: { onhover: { enable: true, mode: 'repulse' }, onclick: { enable: true, mode: 'push' }, resize: true },
+          modes: { repulse: { distance: 100, duration: 0.4 }, push: { particles_nb: 4 } }
+        },
+        retina_detect: true
+      });
+
+      // Initialize WebSocket connection on page load
+      connect();
+    </script>
+  </body>
+</html>
