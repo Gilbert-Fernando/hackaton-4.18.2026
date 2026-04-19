@@ -58,7 +58,7 @@ def predict_label(model, encoder, features: np.ndarray) -> Tuple[str, float]:
     return str(encoder.inverse_transform([idx])[0]), 1.0
 
 
-CONFIDENCE_THRESHOLD = 0.70
+CONFIDENCE_THRESHOLD = 0.60
 STABLE_SECONDS       = 1.2
 COOLDOWN_SECONDS     = 1.5
 

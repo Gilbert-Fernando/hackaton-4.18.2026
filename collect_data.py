@@ -37,6 +37,8 @@ KEY_TO_LABEL: Dict[str, str] = {
     "8": "water",
     "9": "bathroom",
     "0": "emergency",
+    
+
 }
 
 
