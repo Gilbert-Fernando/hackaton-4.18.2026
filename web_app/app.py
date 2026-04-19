@@ -2,16 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import os
+import threading
 import time
-from collections import Counter, deque
-from dataclasses import dataclass
-from typing import Deque, Optional, Tuple
+from typing import Optional
 
 import cv2
 import joblib
 import numpy as np
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -22,47 +21,8 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from src.hand_tracking import HandTracker
-
-
-@dataclass
-class SmoothedPrediction:
-    label: str
-    confidence: float
-
-
-class PredictionSmoother:
-    def __init__(self, window_size: int = 12, min_count: int = 6) -> None:
-        self._items: Deque[Tuple[str, float]] = deque(maxlen=window_size)
-        self._min_count = min_count
-
-    def push(self, label: str, confidence: float) -> None:
-        self._items.append((label, float(confidence)))
-
-    def get(self) -> Optional[SmoothedPrediction]:
-        if len(self._items) < self._min_count:
-            return None
-
-        labels = [lbl for (lbl, _conf) in self._items]
-        winner, winner_count = Counter(labels).most_common(1)[0]
-        if winner_count < self._min_count:
-            return None
-
-        winner_confs = [conf for (lbl, conf) in self._items if lbl == winner]
-        return SmoothedPrediction(label=winner, confidence=float(np.mean(winner_confs)))
-
-
-def predict_label(model, encoder, features: np.ndarray) -> Tuple[str, float]:
-    x = features.reshape(1, -1)
-
-    if hasattr(model, "predict_proba"):
-        proba = model.predict_proba(x)[0]
-        idx = int(np.argmax(proba))
-        label = str(encoder.inverse_transform([idx])[0])
-        return label, float(proba[idx])
-
-    idx = int(model.predict(x)[0])
-    label = str(encoder.inverse_transform([idx])[0])
-    return label, 1.0
+from src.predict_realtime import PredictionSmoother, predict_from_hands
+from utils.visualization import draw_landmark_points
 
 
 class ConnectionManager:
@@ -102,11 +62,24 @@ class RealtimeEngine:
 
         self.cap = cv2.VideoCapture(camera_index)
         if not self.cap.isOpened():
-            raise RuntimeError(f"Could not open webcam (index {camera_index})")
+            self.cap.release()
+            self.cap = None
+
+            for idx in range(0, 6):
+                if idx == camera_index:
+                    continue
+                cap = cv2.VideoCapture(idx)
+                if cap.isOpened():
+                    self.cap = cap
+                    break
+                cap.release()
+
+            if self.cap is None:
+                raise RuntimeError(f"Could not open webcam (tried indices 0-5; preferred {camera_index})")
 
         self.tracker = HandTracker(max_num_hands=2)
-        self.letters_smoother = PredictionSmoother(window_size=12, min_count=6)
-        self.phrases_smoother = PredictionSmoother(window_size=12, min_count=6)
+        self.letters_smoother = PredictionSmoother(window_size=10, dominance=0.7)
+        self.phrases_smoother = PredictionSmoother(window_size=10, dominance=0.7)
 
         self._lock = asyncio.Lock()
         self._latest_jpeg: Optional[bytes] = None
@@ -120,6 +93,7 @@ class RealtimeEngine:
         }
 
         self._running = False
+        self._thread: Optional[threading.Thread] = None
 
     async def start(self, manager: ConnectionManager) -> None:
         if self._running:
@@ -127,12 +101,16 @@ class RealtimeEngine:
         self._running = True
 
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, self._run_loop, manager)
+        self._thread = threading.Thread(target=self._run_loop, args=(manager, loop), daemon=True)
+        self._thread.start()
 
     def stop(self) -> None:
         self._running = False
 
-    def _run_loop(self, manager: ConnectionManager) -> None:
+        if self._thread is not None and self._thread.is_alive():
+            self._thread.join(timeout=2.0)
+
+    def _run_loop(self, manager: ConnectionManager, loop: asyncio.AbstractEventLoop) -> None:
         last_t = time.time()
         fps = 0.0
         ema_alpha = 0.15
@@ -145,33 +123,30 @@ class RealtimeEngine:
             frame = cv2.flip(frame, 1)
 
             hands = self.tracker.detect_hands(frame)
-            mode_text = ""
-            label = ""
-            conf = 0.0
+            overlay = frame.copy()
 
-            if len(hands) == 1:
-                mode_text = "LETTERS"
-                label, conf = predict_label(
-                    self.letters_model, self.letters_encoder, hands[0].feature_vector
+            if len(hands) == 0:
+                cv2.putText(
+                    overlay,
+                    "No hand detected",
+                    (10, 45),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    1.0,
+                    (0, 0, 255),
+                    2,
                 )
-                self.letters_smoother.push(label, conf)
-                smoothed = self.letters_smoother.get()
-            elif len(hands) == 2:
-                mode_text = "PHRASES"
-                features_2hand = np.concatenate(
-                    [hands[0].feature_vector, hands[1].feature_vector]
-                )
-                label, conf = predict_label(
-                    self.phrases_model, self.phrases_encoder, features_2hand
-                )
-                self.phrases_smoother.push(label, conf)
-                smoothed = self.phrases_smoother.get()
             else:
-                smoothed = None
-
-            if smoothed is not None:
-                label = smoothed.label
-                conf = smoothed.confidence
+                for hnd in hands:
+                    draw_landmark_points(overlay, hnd.landmarks_xy)
+            payload = predict_from_hands(
+                hands,
+                letters_model=self.letters_model,
+                letters_encoder=self.letters_encoder,
+                phrases_model=self.phrases_model,
+                phrases_encoder=self.phrases_encoder,
+                letters_smoother=self.letters_smoother,
+                phrases_smoother=self.phrases_smoother,
+            )
 
             now = time.time()
             inst_fps = 1.0 / max(1e-6, now - last_t)
@@ -179,8 +154,8 @@ class RealtimeEngine:
             fps = (1 - ema_alpha) * fps + ema_alpha * inst_fps
 
             cv2.putText(
-                frame,
-                f"{label}",
+                overlay,
+                f"{payload['label']}",
                 (20, 70),
                 cv2.FONT_HERSHEY_DUPLEX,
                 2.2,
@@ -188,8 +163,8 @@ class RealtimeEngine:
                 4,
             )
             cv2.putText(
-                frame,
-                f"conf: {conf:.2f}",
+                overlay,
+                f"conf: {float(payload['confidence']):.2f}",
                 (20, 110),
                 cv2.FONT_HERSHEY_DUPLEX,
                 0.8,
@@ -197,21 +172,22 @@ class RealtimeEngine:
                 2,
             )
 
-            ok2, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+            ok2, buf = cv2.imencode(".jpg", overlay, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
             if not ok2:
                 continue
             jpeg = buf.tobytes()
 
-            payload = {
-                "label": label,
-                "confidence": float(conf),
-                "mode": mode_text,
-                "hands": int(len(hands)),
-                "ts": int(now * 1000),
-                "fps": float(fps),
-            }
+            payload["ts"] = int(now * 1000)
+            payload["fps"] = float(fps)
 
-            asyncio.run(self._update_and_broadcast(manager, jpeg, payload))
+            fut = asyncio.run_coroutine_threadsafe(
+                self._update_and_broadcast(manager, jpeg, payload),
+                loop,
+            )
+            try:
+                fut.result(timeout=1.0)
+            except Exception:
+                pass
 
         self.tracker.close()
         self.cap.release()
@@ -228,6 +204,10 @@ class RealtimeEngine:
     async def get_latest_jpeg(self) -> Optional[bytes]:
         async with self._lock:
             return self._latest_jpeg
+
+    async def get_latest_payload(self) -> dict:
+        async with self._lock:
+            return dict(self._latest_payload)
 
 
 app = FastAPI()
@@ -256,6 +236,25 @@ async def index() -> HTMLResponse:
         return HTMLResponse(f.read())
 
 
+@app.get("/debug")
+async def debug() -> JSONResponse:
+    index_path = os.path.join(os.path.dirname(__file__), "static", "index.html")
+    try:
+        with open(index_path, "r", encoding="utf-8") as f:
+            html = f.read()
+    except Exception as e:
+        return JSONResponse({"app_file": __file__, "index_path": index_path, "error": str(e)})
+
+    return JSONResponse(
+        {
+            "app_file": __file__,
+            "index_path": index_path,
+            "has_pullState": "pullState" in html,
+            "html_prefix": html[:120],
+        }
+    )
+
+
 @app.get("/video")
 async def video() -> StreamingResponse:
     async def gen():
@@ -275,6 +274,14 @@ async def video() -> StreamingResponse:
             await asyncio.sleep(0.03)
 
     return StreamingResponse(gen(), media_type="multipart/x-mixed-replace; boundary=frame")
+
+
+@app.get("/state")
+async def state() -> JSONResponse:
+    if engine is None:
+        return JSONResponse({"label": "", "confidence": 0.0, "mode": "", "hands": 0, "ts": 0, "fps": 0.0})
+    payload = await engine.get_latest_payload()
+    return JSONResponse(payload)
 
 
 @app.websocket("/ws")

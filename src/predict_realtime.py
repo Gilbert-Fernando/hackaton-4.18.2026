@@ -63,6 +63,53 @@ def predict_label(model, encoder, features: np.ndarray) -> Tuple[str, float]:
     return str(encoder.inverse_transform([idx])[0]), 1.0
 
 
+def predict_from_hands(
+    hands,
+    *,
+    letters_model,
+    letters_encoder,
+    phrases_model,
+    phrases_encoder,
+    letters_smoother: "PredictionSmoother",
+    phrases_smoother: "PredictionSmoother",
+) -> dict:
+    mode_text = ""
+    raw_label = ""
+    raw_conf = 0.0
+    label = ""
+    conf = 0.0
+    smoothed = None
+
+    if len(hands) == 1:
+        mode_text = "LETTERS"
+        raw_label, raw_conf = predict_label(letters_model, letters_encoder, hands[0].feature_vector)
+        letters_smoother.push(raw_label, raw_conf)
+        smoothed = letters_smoother.get()
+    elif len(hands) == 2:
+        mode_text = "PHRASES"
+        feats = np.concatenate([hands[0].feature_vector, hands[1].feature_vector])
+        raw_label, raw_conf = predict_label(phrases_model, phrases_encoder, feats)
+        phrases_smoother.push(raw_label, raw_conf)
+        smoothed = phrases_smoother.get()
+
+    if smoothed is None:
+        label = raw_label
+        conf = raw_conf
+    else:
+        label = smoothed.label
+        conf = smoothed.confidence
+
+    return {
+        "label": label,
+        "confidence": float(conf),
+        "raw_label": raw_label,
+        "raw_confidence": float(raw_conf),
+        "is_smoothed": bool(smoothed is not None),
+        "mode": mode_text,
+        "hands": int(len(hands)),
+    }
+
+
 class TTS:
     def __init__(self, rate: int = 0, volume: float = 1.0) -> None:
         self._q: "queue.Queue[Optional[str]]" = queue.Queue()
@@ -211,29 +258,24 @@ def main() -> None:
                 for hnd in hands:
                     draw_landmark_points(overlay, hnd.landmarks_xy)
 
-                if len(hands) == 1:
-                    mode_text = "LETTERS"
-                    label, conf = predict_label(letters_model, letters_encoder, hands[0].feature_vector)
-                    letters_smoother.push(label, conf)
-                    smoothed = letters_smoother.get()
-                elif len(hands) == 2:
-                    mode_text = "PHRASES"
-                    feats = np.concatenate([hands[0].feature_vector, hands[1].feature_vector])
-                    label, conf = predict_label(phrases_model, phrases_encoder, feats)
-                    phrases_smoother.push(label, conf)
-                    smoothed = phrases_smoother.get()
-                else:
-                    mode_text = ""
-                    smoothed = None
-                    label, conf = "", 0.0
+                payload = predict_from_hands(
+                    hands,
+                    letters_model=letters_model,
+                    letters_encoder=letters_encoder,
+                    phrases_model=phrases_model,
+                    phrases_encoder=phrases_encoder,
+                    letters_smoother=letters_smoother,
+                    phrases_smoother=phrases_smoother,
+                )
 
-                raw_label_upper = label.strip().upper() if label else ""
-                raw_conf = conf
+                mode_text = payload["mode"]
+                raw_label = payload["raw_label"]
+                raw_conf = float(payload["raw_confidence"])
+                raw_label_upper = raw_label.strip().upper() if raw_label else ""
 
-                if smoothed is None:
-                    display_label, display_conf, color = label, conf, (255, 255, 0)
-                else:
-                    display_label, display_conf, color = smoothed.label, smoothed.confidence, (0, 255, 0)
+                display_label = payload["label"]
+                display_conf = float(payload["confidence"])
+                color = (0, 255, 0) if payload["is_smoothed"] else (255, 255, 0)
 
                 now = time.monotonic()
                 label_upper = display_label.strip().upper() if display_label else ""

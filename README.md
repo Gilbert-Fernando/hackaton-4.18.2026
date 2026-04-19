@@ -53,6 +53,20 @@ python src/train_model.py
 python main.py
 ```
 
+## Web UI (localhost)
+
+```bash
+python run_local.py
+```
+
+If the page shows "Disconnected (retrying...)", install the WebSocket dependency:
+
+```bash
+pip install -r requirements.txt
+```
+
+Open `http://127.0.0.1:8000`.
+
 ## Notes
 
 - Start with ~50–200 samples per label for decent stability.
