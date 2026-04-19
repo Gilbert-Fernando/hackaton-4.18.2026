@@ -1,1 +1,133 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Face Detection (Web)</title>
+  <link rel="stylesheet" href="static/css/frontend.css" />
 
+  <!-- Face API -->
+  <script defer src="https://unpkg.com/face-api.js@0.22.2/dist/face-api.min.js"></script>
+</head>
+  <body>
+    <h1>Webcam Face Detection</h1>
+
+    <div class="wrap">
+      <video id="video" autoplay muted playsinline></video>
+      <canvas id="overlay"></canvas>
+    </div>
+
+    <div class="row">
+      <button id="start">Start</button>
+      <button id="stop" disabled>Stop</button>
+      <span id="status">Idle</span>
+    </div>
+
+    <script>
+      const video = document.getElementById("video");
+      const canvas = document.getElementById("overlay");
+      const ctx = canvas.getContext("2d");
+      const startBtn = document.getElementById("start");
+      const stopBtn = document.getElementById("stop");
+      const statusEl = document.getElementById("status");
+
+      let stream = null;
+      let timer = null;
+      let lastLoggedAt = 0;
+
+      async function loadModels() {
+        // These files are fetched automatically from this URL:
+        // https://unpkg.com/face-api.js@0.22.2/weights/
+        const MODEL_URL = "https://unpkg.com/face-api.js@0.22.2/weights";
+        await faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL);
+      }
+
+      function setStatus(text) {
+        statusEl.textContent = text;
+      }
+
+      function resizeOverlay() {
+        const rect = video.getBoundingClientRect();
+        canvas.width = Math.round(rect.width);
+        canvas.height = Math.round(rect.height);
+      }
+
+      async function start() {
+        startBtn.disabled = true;
+        setStatus("Loading model...");
+
+        await loadModels();
+
+        setStatus("Requesting camera...");
+        stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        video.srcObject = stream;
+
+        await new Promise((resolve) => (video.onloadedmetadata = resolve));
+        resizeOverlay();
+        window.addEventListener("resize", resizeOverlay);
+
+        setStatus("Running...");
+        stopBtn.disabled = false;
+
+        timer = setInterval(async () => {
+          if (video.readyState < 2) return;
+
+          // Clear
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+          // Detect faces
+          const detections = await faceapi.detectAllFaces(
+            video,
+            new faceapi.TinyFaceDetectorOptions({ inputSize: 416, scoreThreshold: 0.5 })
+          );
+
+          // Map detection boxes from video coords to canvas coords
+          const displaySize = { width: canvas.width, height: canvas.height };
+          const resized = faceapi.resizeResults(detections, displaySize);
+
+          // Draw rectangles (green)
+          ctx.strokeStyle = "rgb(0,255,0)";
+          ctx.lineWidth = 2;
+
+          for (const det of resized) {
+            const { x, y, width, height } = det.box;
+            ctx.strokeRect(x, y, width, height);
+          }
+
+          // Log like your Python code (throttled)
+          if (resized.length > 0) {
+            const now = Date.now();
+            if (now - lastLoggedAt > 800) {
+              console.log("Face detected!");
+              lastLoggedAt = now;
+            }
+          }
+        }, 100);
+      }
+
+      function stop() {
+        if (timer) clearInterval(timer);
+        timer = null;
+
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        if (stream) {
+          stream.getTracks().forEach((t) => t.stop());
+          stream = null;
+        }
+        video.srcObject = null;
+
+        stopBtn.disabled = true;
+        startBtn.disabled = false;
+        setStatus("Stopped");
+      }
+
+      startBtn.addEventListener("click", () => start().catch(err => {
+        console.error(err);
+        setStatus("Error: " + err.message);
+        startBtn.disabled = false;
+      }));
+      stopBtn.addEventListener("click", stop);
+    </script>
+  </body>
+</html>
