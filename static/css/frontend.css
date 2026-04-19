@@ -1,0 +1,114 @@
+/* Background: colorful circus stripes */
+body {
+  font-family: "Comic Sans MS", "Comic Neue", cursive;
+  padding: 16px;
+  background: repeating-linear-gradient(
+    45deg,
+    #ff4d4d,
+    #ff4d4d 20px,
+    #ffd93d 20px,
+    #ffd93d 40px,
+    #4dd2ff 40px,
+    #4dd2ff 60px
+  );
+  color: #222;
+  text-align: center;
+}
+
+/* Title styling */
+h1 {
+  font-size: 2.5rem;
+  color: #fff;
+  text-shadow: 3px 3px 0 #000, 6px 6px 0 #ff00ff;
+  margin-bottom: 20px;
+}
+
+/* Video container */
+.wrap {
+  position: relative;
+  width: min(720px, 100%);
+  margin: auto;
+  border: 6px dashed #ff00ff;
+  border-radius: 20px;
+  background: #fff;
+  box-shadow: 0 0 20px rgba(0,0,0,0.3);
+  overflow: hidden;
+}
+
+/* Video & canvas */
+video, canvas {
+  width: 100%;
+  height: auto;
+  display: block;
+  border-radius: 12px;
+}
+
+canvas {
+  position: absolute;
+  left: 0;
+  top: 0;
+}
+
+/* Controls row */
+.row {
+  display: flex;
+  gap: 12px;
+  margin-top: 16px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+/* Buttons: colorful + bouncy */
+button {
+  padding: 12px 18px;
+  font-size: 1rem;
+  border: none;
+  border-radius: 50px;
+  background: linear-gradient(135deg, #ff4d4d, #ff00ff);
+  color: white;
+  cursor: pointer;
+  box-shadow: 0 5px 0 #990000;
+  transition: all 0.15s ease;
+}
+
+button:nth-child(2) {
+  background: linear-gradient(135deg, #4dd2ff, #00ff99);
+  box-shadow: 0 5px 0 #006666;
+}
+
+button:hover {
+  transform: scale(1.1) rotate(-2deg);
+}
+
+button:active {
+  transform: translateY(4px);
+  box-shadow: 0 1px 0 #333;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Status text */
+#status {
+  font-weight: bold;
+  background: #fff;
+  padding: 6px 12px;
+  border-radius: 20px;
+  border: 3px dotted #000;
+  box-shadow: 2px 2px 0 #000;
+}
+
+/* Optional: subtle wiggle animation for fun */
+@keyframes wiggle {
+  0% { transform: rotate(0deg); }
+  25% { transform: rotate(1deg); }
+  50% { transform: rotate(-1deg); }
+  75% { transform: rotate(1deg); }
+  100% { transform: rotate(0deg); }
+}
+
+.wrap:hover {
+  animation: wiggle 0.4s ease-in-out;
+}
